@@ -1,8 +1,15 @@
-#include <stdio.h>
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_image.h>
+#include <iostream>
+#include <sstream>
+#include <string>
+
+#include <logger.h>
+
+#ifdef __EMSCRIPTEN__
 #include <emscripten.h>
 #include <emscripten/html5.h>
+#endif
 
 /**
  * Inverse square root of two, for normalising velocity
@@ -21,6 +28,7 @@
 struct context
 {
     SDL_Renderer *renderer;
+    SDL_Window *window;
 
     /**
      * Rectangle that the owl texture will be rendered into
@@ -43,10 +51,9 @@ struct context
 int get_owl_texture(struct context * ctx)
 {
   SDL_Surface *image = IMG_Load("assets/preload/owl.png");
-  if (!image)
-  {
-     printf("IMG_Load: %s\n", IMG_GetError());
-     return 0;
+  if (!image) {
+      log_error(IMG_GetError());
+      return 0;
   }
   ctx->owl_tex = SDL_CreateTextureFromSurface(ctx->renderer, image);
   ctx->dest.w = image->w;
@@ -57,10 +64,6 @@ int get_owl_texture(struct context * ctx)
   return 1;
 }
 
-/**
- * Processes the input events and sets the velocity
- * of the owl accordingly
- */
 void process_input(struct context *ctx)
 {
     SDL_Event event;
@@ -115,80 +118,82 @@ void process_input(struct context *ctx)
     }
 }
 
-int frameCounter = 0;
+// (2^64/60) ~ 9.74e9 years
+ulong frameCounter = 0;
 
 /**
- * Loop handler that gets called each animation frame,
- * process the input, update the position of the owl and 
- * then render the texture
+ * Loop handler that gets called each animation frame
  */
 void loop_handler(void *arg)
 {
     struct context *ctx = (context*) arg;
 
-    int vx = 0;
-    int vy = 0;
     process_input(ctx);
 
     ctx->dest.x += ctx->owl_vx;
     ctx->dest.y += ctx->owl_vy;
 
+    SDL_SetRenderDrawColor(ctx->renderer, 0xff, 0xff, 0xff, SDL_ALPHA_OPAQUE);
     SDL_RenderClear(ctx->renderer);
     SDL_RenderCopy(ctx->renderer, ctx->owl_tex, NULL, &ctx->dest);
+
+    SDL_SetRenderDrawColor(ctx->renderer, 0, 0, 0, SDL_ALPHA_OPAQUE);
+    int width, height;
+    SDL_GetRendererOutputSize(ctx->renderer, &width, &height);
+    SDL_RenderDrawLine(ctx->renderer, 0, 0, width, height);
+    SDL_RenderDrawLine(ctx->renderer, 0, height, width, 0);
+
     SDL_RenderPresent(ctx->renderer);
+
     frameCounter++;
-    if (frameCounter > 60) {
-        frameCounter = 0;
-    }
 
     if (frameCounter % 60 == 20) {
-        printf("Once per second\n");
+        log_debug("Once per second");
     }
 }
 
-EM_BOOL on_canvassize_changed(int eventType, const void *reserved, void *userData)
-{
-  int w, h;
-  emscripten_get_canvas_element_size("#canvas", &w, &h);
-  double cssW, cssH;
-  emscripten_get_element_css_size("#canvas", &cssW, &cssH);
-  printf("Canvas resized: WebGL RTT size: %dx%d, canvas CSS size: %02gx%02g\n", w, h, cssW, cssH);
-  return 0;
-}
+#define DEFAULT_WIDTH 50
+#define DEFAULT_HEIGHT 50
+
+struct context ctx;
 
 int main()
 {
+    log_set_level(LOG_LEVEL_ALL);
+    log_set_handler([](std::string message, int level) -> void {
+        std::cout << level << " " << message << std::endl;
+    });
+
     SDL_Window *window;
-    struct context ctx;
 
     SDL_Init(SDL_INIT_VIDEO);
-    SDL_CreateWindowAndRenderer(600, 400, SDL_WINDOW_RESIZABLE, &window, &ctx.renderer);
-    SDL_SetWindowSize(window, 600, 400);
+    SDL_CreateWindowAndRenderer(DEFAULT_WIDTH, DEFAULT_HEIGHT, SDL_WINDOW_RESIZABLE, &window, &ctx.renderer);
+    SDL_SetWindowSize(window, DEFAULT_WIDTH, DEFAULT_HEIGHT);
     SDL_SetRenderDrawColor(ctx.renderer, 255, 255, 255, 255);
 
     get_owl_texture(&ctx);
+    ctx.window = window;
     ctx.active_state = NOTHING_PRESSED;
     ctx.dest.x = 200;
     ctx.dest.y = 100;
     ctx.owl_vx = 0;
     ctx.owl_vy = 0;
 
-    emscripten_set_resize_callback("#canvas", nullptr, 0, [](int eventType, const EmscriptenUiEvent *uiEvent, void *userData) -> EM_BOOL {
-        printf("RESIZE!\n");
-        return 0;
-    });
-    
-    SDL_AddEventWatch([](void*, SDL_Event* event) -> int{
-        if((event->type == SDL_KEYDOWN) && event->key.keysym.sym == SDLK_F11) {
-            emscripten_request_pointerlock("#canvas", 0);
-            emscripten_request_fullscreen("#canvas", 0);
-            printf("Going fullscreen\n");
-        }
-        return 1;
-    }, 0);
-
     SDL_ShowCursor(SDL_ENABLE);
+    log_info("Starting mainloop...");
+    EM_ASM( window.notify_startingMainloop() );
     emscripten_set_main_loop_arg(loop_handler, &ctx, -1, 1);
 
     return 0;
 }
+
+#ifdef __EMSCRIPTEN__
+extern "C" {
+    void js_on_resize_callback(int width, int height) {
+        std::stringstream ss;
+        ss << "Resize to " << width << "x" << height;
+        log_alert(ss.str());
+        SDL_SetWindowSize(ctx.window, width, height);
+    }
+}
+#endif

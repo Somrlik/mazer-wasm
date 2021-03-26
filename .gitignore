@@ -2,3 +2,4 @@
 build/*
 public/*
 !public/index.html
+!public/index.js

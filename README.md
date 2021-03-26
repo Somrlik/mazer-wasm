@@ -13,8 +13,7 @@ Then use `cmake`
 ```bash
 mkdir build
 cd build
-emcmake cmake .. 
-make
+emcmake cmake .. && make
 ```
 
 
